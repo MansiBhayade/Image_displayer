@@ -3,8 +3,6 @@ package com.example.task
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -18,11 +16,14 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import androidx.collection.LruCache
 
 class ImageAdapter(
     private val context: Context,
-    private val imageUrls: MutableList<String>
+     val imageUrls: MutableList<String>
 ) : RecyclerView.Adapter<ImageAdapter.ImageViewHolder>() {
+
+    private val memoryCache: LruCache<String, Bitmap> = LruCache(50)
 
     inner class ImageViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         val imageView: ImageView = itemView.findViewById(R.id.imageView)
@@ -49,22 +50,42 @@ class ImageAdapter(
     }
 
     private fun loadImage(imageUrl: String, imageView: ImageView) {
+        val cacheKey = imageUrl.hashCode().toString()
+        memoryCache.get(cacheKey)?.let {
+            imageView.setImageBitmap(it)
+            return
+        }
+
         CoroutineScope(Dispatchers.IO).launch {
-            try {
-                Log.d("ImageAdapter", "Loading image from URL: $imageUrl")
-                val url = URL(imageUrl)
-                val connection = url.openConnection() as HttpURLConnection
-                connection.doInput = true
-                connection.connect()
-                val input = connection.inputStream
-                val bitmap = BitmapFactory.decodeStream(input)
-                withContext(Dispatchers.Main) {
-                    imageView.setImageBitmap(bitmap)
+            var bitmap = DiskCache.getBitmapFromDisk(context, cacheKey)
+            if (bitmap == null) {
+                bitmap = downloadBitmap(imageUrl)
+                if (bitmap != null) {
+                    DiskCache.saveBitmapToDisk(context, cacheKey, bitmap)
                 }
-            } catch (e: IOException) {
-                Log.e("ImageAdapter", "Error loading image from URL: $imageUrl", e)
-                e.printStackTrace()
+            }
+            bitmap?.let {
+                memoryCache.put(cacheKey, it)
+                withContext(Dispatchers.Main) {
+                    imageView.setImageBitmap(it)
+                }
             }
         }
     }
+
+    private fun downloadBitmap(imageUrl: String): Bitmap? {
+        return try {
+            val url = URL(imageUrl)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.doInput = true
+            connection.connect()
+            val input = connection.inputStream
+            BitmapFactory.decodeStream(input)
+        } catch (e: IOException) {
+            e.printStackTrace()
+            null
+        }
+    }
 }
+
+
